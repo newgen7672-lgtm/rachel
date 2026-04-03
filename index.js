@@ -6,10 +6,10 @@ app.use(express.json());
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY
 });
 
-// 사용자별 간단 메모리
+// ===== 사용자별 메모리 =====
 const userData = new Map();
 
 function getUserState(chatId) {
@@ -17,12 +17,19 @@ function getUserState(chatId) {
     userData.set(chatId, {
       todos: [],
       history: [],
-      memories: []
+      memories: [
+        "오빠는 LINE 다니고 있어",
+        "오빠는 NEXT Market 업무 하고 있어",
+        "오빠 팀원은 6명이야",
+        "오빠 회사 주소는 백현동 535야",
+        "오빠 집주소는 분당구 양현로 166번길 20이야"
+      ]
     });
   }
   return userData.get(chatId);
 }
 
+// ===== 텔레그램 =====
 async function sendTelegramMessage(chatId, text) {
   const telegramRes = await fetch(
     `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
@@ -43,6 +50,7 @@ async function sendTelegramMessage(chatId, text) {
   console.log("Telegram response:", result);
 }
 
+// ===== 유틸 =====
 function stripHtml(text = "") {
   return text
     .replace(/<[^>]*>/g, "")
@@ -54,8 +62,78 @@ function stripHtml(text = "") {
     .trim();
 }
 
-async function naverSearch(type, query) {
-  const url = `https://openapi.naver.com/v1/search/${type}.json?query=${encodeURIComponent(query)}&display=5&sort=sim`;
+function compactText(text = "") {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function buildNaverMapSearchLink(query) {
+  return `https://map.naver.com/p/search/${encodeURIComponent(query)}`;
+}
+
+function cleanSearchText(text) {
+  return compactText(
+    text
+      .replace(/오빠/gi, "")
+      .replace(/네이버에서/gi, "")
+      .replace(/인터넷에서/gi, "")
+      .replace(/검색해서/gi, "")
+      .replace(/검색해줘/gi, "")
+      .replace(/찾아줘/gi, "")
+      .replace(/알아봐줘/gi, "")
+      .replace(/알려줘/gi, "")
+      .replace(/보여줘/gi, "")
+      .replace(/추천해줘/gi, "")
+      .replace(/추천해 줘/gi, "")
+      .replace(/좀/gi, "")
+      .replace(/정확한/gi, "")
+      .replace(/공식/gi, "")
+      .replace(/홈페이지/gi, "")
+      .replace(/사이트/gi, "")
+      .replace(/주소/gi, "")
+      .replace(/위치/gi, "")
+      .replace(/본사/gi, "")
+      .replace(/전화번호/gi, "")
+      .replace(/url/gi, "")
+      .replace(/링크/gi, "")
+      .replace(/\?/g, "")
+  );
+}
+
+function classifySearchIntent(text) {
+  const t = text.toLowerCase();
+
+  const companyWords = [
+    "회사", "본사", "기업", "법인", "대표", "주소", "위치", "홈페이지", "사이트", "url", "링크"
+  ];
+  const placeWords = [
+    "맛집", "식당", "가게", "회집", "술집", "카페", "밥집", "플레이스", "지도", "근처"
+  ];
+  const newsWords = ["뉴스", "기사", "보도", "이슈", "최근"];
+
+  const companyScore = companyWords.filter((w) => t.includes(w)).length;
+  const placeScore = placeWords.filter((w) => t.includes(w)).length;
+  const newsScore = newsWords.filter((w) => t.includes(w)).length;
+
+  if (newsScore > 0) return "news";
+  if (placeScore > companyScore) return "place";
+
+  if (
+    t.includes("주소") ||
+    t.includes("위치") ||
+    t.includes("본사") ||
+    t.includes("홈페이지") ||
+    t.includes("사이트") ||
+    t.includes("url") ||
+    t.includes("링크")
+  ) {
+    return "company";
+  }
+
+  return "general";
+}
+
+async function naverSearch(type, query, display = 5) {
+  const url = `https://openapi.naver.com/v1/search/${type}.json?query=${encodeURIComponent(query)}&display=${display}&sort=sim`;
 
   const res = await fetch(url, {
     headers: {
@@ -65,131 +143,34 @@ async function naverSearch(type, query) {
   });
 
   const data = await res.json();
-  console.log(`NAVER ${type}:`, JSON.stringify(data));
+  console.log(`NAVER ${type} / ${query}:`, JSON.stringify(data));
   return data.items || [];
 }
 
 function needsNaverSearch(text) {
   const keywords = [
-    "주소",
-    "위치",
-    "어디",
-    "본사",
-    "회사 정보",
-    "홈페이지",
-    "전화번호",
-    "최근 뉴스",
-    "기사",
-    "알아봐줘",
-    "찾아줘",
-    "검색해줘"
+    "주소", "위치", "어디", "본사", "회사", "홈페이지", "사이트", "url", "링크",
+    "맛집", "식당", "가게", "회집", "술집", "카페", "추천", "근처",
+    "뉴스", "기사", "검색", "찾아줘", "알아봐줘", "알려줘"
   ];
-
   return keywords.some((k) => text.includes(k));
 }
 
-async function buildSearchContext(userText) {
-  if (
-    userText.includes("주소") ||
-    userText.includes("위치") ||
-    userText.includes("어디") ||
-    userText.includes("본사")
-  ) {
-    const localItems = await naverSearch("local", userText + " 본사 위치").catch(() => []);
-
-    if (localItems.length > 0) {
-      return localItems
-        .map(
-          (item, i) => `${i + 1}. ${stripHtml(item.title)}
-주소: ${stripHtml(item.address || "")}
-도로명: ${stripHtml(item.roadAddress || "")}
-전화: ${stripHtml(item.telephone || "")}
-카테고리: ${stripHtml(item.category || "")}`
-        )
-        .join("\n\n");
-    }
-
-    const webItems = await naverSearch("webkr", userText + " 본사 주소").catch(() => []);
-
-    if (webItems.length > 0) {
-      return webItems
-        .map(
-          (item, i) => `${i + 1}. ${stripHtml(item.title)}
-요약: ${stripHtml(item.description || "")}
-링크: ${item.link || ""}`
-        )
-        .join("\n\n");
-    }
-
-    return "회사 주소 관련 검색 결과를 찾지 못했어.";
-  }
-
-  if (userText.includes("뉴스") || userText.includes("기사")) {
-    const newsItems = await naverSearch("news", userText).catch(() => []);
-
-    if (newsItems.length > 0) {
-      return newsItems
-        .map(
-          (item, i) => `${i + 1}. ${stripHtml(item.title)}
-요약: ${stripHtml(item.description || "")}
-링크: ${item.link || ""}`
-        )
-        .join("\n\n");
-    }
-
-    return "뉴스 검색 결과를 찾지 못했어.";
-  }
-
-  const webItems = await naverSearch("webkr", userText + " 회사 정보").catch(() => []);
-
-  if (webItems.length > 0) {
-    return webItems
-      .map(
-        (item, i) => `${i + 1}. ${stripHtml(item.title)}
-요약: ${stripHtml(item.description || "")}
-링크: ${item.link || ""}`
-      )
-      .join("\n\n");
-  }
-
-  const blogItems = await naverSearch("blog", userText + " 회사 정보").catch(() => []);
-
-  if (blogItems.length > 0) {
-    return blogItems
-      .map(
-        (item, i) => `${i + 1}. ${stripHtml(item.title)}
-요약: ${stripHtml(item.description || "")}
-링크: ${item.link || ""}`
-      )
-      .join("\n\n");
-  }
-
-  return "검색 결과를 찾지 못했어.";
-}
-
-// ===== 기억 기능 =====
-
+// ===== 기억 =====
 function addMemory(chatId, memoryText, source = "manual") {
   const state = getUserState(chatId);
-
   const cleaned = memoryText.trim();
   if (!cleaned) return false;
 
   const alreadyExists = state.memories.some(
-    (m) => m.text.toLowerCase() === cleaned.toLowerCase()
+    (m) => m.toLowerCase() === cleaned.toLowerCase()
   );
-
   if (alreadyExists) return false;
 
-  state.memories.push({
-    text: cleaned,
-    source,
-    createdAt: new Date().toISOString()
-  });
+  state.memories.push(cleaned);
 
-  // 너무 많아지면 최근 30개만 유지
-  if (state.memories.length > 30) {
-    state.memories = state.memories.slice(-30);
+  if (state.memories.length > 50) {
+    state.memories = state.memories.slice(-50);
   }
 
   return true;
@@ -200,7 +181,7 @@ function deleteMemory(chatId, keyword) {
   const before = state.memories.length;
 
   state.memories = state.memories.filter(
-    (m) => !m.text.toLowerCase().includes(keyword.toLowerCase())
+    (m) => !m.toLowerCase().includes(keyword.toLowerCase())
   );
 
   return before - state.memories.length;
@@ -208,31 +189,16 @@ function deleteMemory(chatId, keyword) {
 
 function formatMemories(chatId) {
   const state = getUserState(chatId);
-  if (state.memories.length === 0) {
-    return "저장된 기억 없음";
-  }
-
-  return state.memories
-    .map((m, i) => `${i + 1}. ${m.text}`)
-    .join("\n");
+  if (state.memories.length === 0) return "저장된 기억 없음";
+  return state.memories.map((m, i) => `${i + 1}. ${m}`).join("\n");
 }
 
 function shouldAutoRemember(text) {
   const patterns = [
-    "내 이름은 ",
-    "난 ",
-    "나는 ",
-    "오빠가 좋아하는 ",
-    "내가 좋아하는 ",
-    "내가 싫어하는 ",
-    "나를 ",
-    "앞으로 ",
-    "항상 ",
-    "내 직업은 ",
-    "내 회사는 ",
-    "내 취향은 "
+    "내 이름은 ", "난 ", "나는 ", "오빠가 좋아하는 ", "내가 좋아하는 ",
+    "내가 싫어하는 ", "나를 ", "앞으로 ", "항상 ", "내 직업은 ",
+    "내 회사는 ", "내 취향은 ", "내 집은 ", "우리 팀은 "
   ];
-
   return patterns.some((p) => text.includes(p));
 }
 
@@ -243,7 +209,7 @@ async function extractMemoryFromText(userText) {
       {
         role: "system",
         content:
-          "너는 사용자의 발화에서 장기적으로 기억할 만한 핵심 개인 선호나 호칭, 이름, 직업, 취향만 짧게 1개 추출하는 도우미다. 추출할 가치가 없으면 NONE만 출력해라. 문장은 한국어로 1줄만 출력해라."
+          "너는 사용자의 발화에서 장기적으로 기억할 만한 핵심 개인 선호, 호칭, 이름, 직업, 취향, 주소, 팀 정보만 짧게 1개 추출하는 도우미다. 추출할 가치가 없으면 NONE만 출력해라. 한국어 1줄만 출력해라."
       },
       {
         role: "user",
@@ -255,8 +221,149 @@ async function extractMemoryFromText(userText) {
   return (response.output_text || "NONE").trim();
 }
 
-// ===== 웹훅 =====
+// ===== 검색 로직 =====
+async function searchCompanyInfo(userText) {
+  const cleaned = cleanSearchText(userText);
 
+  const localItems = await naverSearch("local", `${cleaned} 본사`, 3).catch(() => []);
+  const addressItems = await naverSearch("webkr", `${cleaned} 회사 주소`, 5).catch(() => []);
+  const homeItems = await naverSearch("webkr", `${cleaned} 공식 홈페이지`, 5).catch(() => []);
+
+  return { cleaned, localItems, addressItems, homeItems };
+}
+
+async function searchPlaceInfo(userText) {
+  const cleaned = cleanSearchText(userText);
+
+  const localItems = await naverSearch("local", cleaned, 5).catch(() => []);
+  const webItems = await naverSearch("webkr", `${cleaned} 네이버 플레이스`, 3).catch(() => []);
+  const blogItems = await naverSearch("blog", `${cleaned} 후기`, 2).catch(() => []);
+
+  return { cleaned, localItems, webItems, blogItems };
+}
+
+async function searchNewsInfo(userText) {
+  const cleaned = cleanSearchText(userText);
+  const newsItems = await naverSearch("news", cleaned, 5).catch(() => []);
+  return { cleaned, newsItems };
+}
+
+function buildCompanyContext(result) {
+  const { cleaned, localItems, addressItems, homeItems } = result;
+
+  let text = `검색 대상: ${cleaned}\n\n`;
+
+  if (localItems.length > 0) {
+    text += `로컬 결과:\n`;
+    text += localItems
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+주소: ${stripHtml(item.address || "")}
+도로명: ${stripHtml(item.roadAddress || "")}
+전화: ${stripHtml(item.telephone || "")}
+카테고리: ${stripHtml(item.category || "")}`
+      )
+      .join("\n\n");
+    text += "\n\n";
+  }
+
+  if (addressItems.length > 0) {
+    text += `주소/회사 정보 후보:\n`;
+    text += addressItems
+      .slice(0, 3)
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
+    text += "\n\n";
+  }
+
+  if (homeItems.length > 0) {
+    text += `공식 홈페이지 후보:\n`;
+    text += homeItems
+      .slice(0, 3)
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
+  }
+
+  return text.trim();
+}
+
+function buildPlaceContext(result) {
+  const { cleaned, localItems, webItems, blogItems } = result;
+
+  let text = `검색 대상: ${cleaned}\n\n`;
+
+  if (localItems.length > 0) {
+    text += `플레이스/로컬 결과:\n`;
+    text += localItems
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+주소: ${stripHtml(item.address || "")}
+도로명: ${stripHtml(item.roadAddress || "")}
+전화: ${stripHtml(item.telephone || "")}
+카테고리: ${stripHtml(item.category || "")}
+지도링크: ${buildNaverMapSearchLink(stripHtml(item.title))}`
+      )
+      .join("\n\n");
+    text += "\n\n";
+  }
+
+  if (webItems.length > 0) {
+    text += `플레이스/웹 후보:\n`;
+    text += webItems
+      .slice(0, 2)
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
+    text += "\n\n";
+  }
+
+  if (blogItems.length > 0) {
+    text += `후기 참고:\n`;
+    text += blogItems
+      .slice(0, 2)
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
+  }
+
+  return text.trim();
+}
+
+function buildNewsContext(result) {
+  const { cleaned, newsItems } = result;
+
+  let text = `검색 대상: ${cleaned}\n\n`;
+
+  if (newsItems.length > 0) {
+    text += newsItems
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
+  } else {
+    text += "뉴스 검색 결과 없음";
+  }
+
+  return text.trim();
+}
+
+// ===== 서버 =====
 app.get("/", (req, res) => {
   res.send("Bot is running");
 });
@@ -269,16 +376,12 @@ app.post("/webhook", async (req, res) => {
 
   try {
     const msg = req.body.message;
-    if (!msg?.text) {
-      console.log("No text message");
-      return;
-    }
+    if (!msg?.text) return;
 
     const chatId = msg.chat.id;
     const userText = msg.text.trim();
     const state = getUserState(chatId);
 
-    // /help
     if (userText === "/help") {
       await sendTelegramMessage(
         chatId,
@@ -292,17 +395,16 @@ app.post("/webhook", async (req, res) => {
 /forget 내용 - 관련 기억 삭제
 기억해줘: 내용 - 명시적으로 기억시키기
 
-예시:
-- 기억해줘: 오빠가 좋아하는 게임은 리니지야
-- /memory
-- /forget 리니지
-- 넷마블 본사 위치 알려줘
-- 최근 게임업계 뉴스 찾아줘`
+검색 예시:
+- 넷마블 본사 주소 알려줘
+- 넷마블 홈페이지 url 알려줘
+- 판교역 근처 회집 추천해줘
+- 어부의 바다 네이버 플레이스 링크 찾아줘
+- 최근 게임업계 뉴스 알려줘`
       );
       return;
     }
 
-    // /memory
     if (userText === "/memory") {
       await sendTelegramMessage(
         chatId,
@@ -311,14 +413,13 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // /forget
     if (userText.startsWith("/forget")) {
       const keyword = userText.replace("/forget", "").trim();
 
       if (!keyword) {
         await sendTelegramMessage(
           chatId,
-          "알겠어, 오빠. 지울 기억의 키워드를 같이 보내줘.\n예: /forget 리니지"
+          "알겠어, 오빠. 지울 기억 키워드를 같이 보내줘.\n예: /forget 리니지"
         );
         return;
       }
@@ -333,13 +434,12 @@ app.post("/webhook", async (req, res) => {
       } else {
         await sendTelegramMessage(
           chatId,
-          `오빠, "${keyword}" 관련해서 지울 기억을 찾지 못했어.`
+          `오빠, "${keyword}" 관련해서 지울 기억을 못 찾았어.`
         );
       }
       return;
     }
 
-    // 명시적 기억
     if (userText.startsWith("기억해줘:") || userText.startsWith("기억해줘 ")) {
       const memoryText = userText
         .replace("기억해줘:", "")
@@ -354,7 +454,7 @@ app.post("/webhook", async (req, res) => {
         return;
       }
 
-      const added = addMemory(chatId, memoryText, "manual");
+      const added = addMemory(chatId, memoryText);
 
       if (added) {
         await sendTelegramMessage(
@@ -370,7 +470,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // /todo
     if (userText.startsWith("/todo")) {
       const todoText = userText.replace("/todo", "").trim();
 
@@ -394,7 +493,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // /summary
     if (userText === "/summary") {
       if (state.history.length === 0) {
         await sendTelegramMessage(chatId, "알겠어, 오빠. 아직 요약할 대화가 없어.");
@@ -485,21 +583,23 @@ ${userText}
 `;
 
     if (needsNaverSearch(userText)) {
-      const searchContext = await buildSearchContext(userText);
+      const intent = classifySearchIntent(userText);
 
-      finalPrompt = `
+      if (intent === "company") {
+        const searchResult = await searchCompanyInfo(userText);
+        const searchContext = buildCompanyContext(searchResult);
+
+        finalPrompt = `
 너는 사용자의 한국어 개인비서다.
 반드시 사용자를 "오빠"라고 부른다.
-말투는 다정하고 자연스럽고 친근하게 한다.
-답변은 짧고 실용적으로 한다.
+회사/기업 검색 결과를 기반으로 답한다.
 
 규칙:
-1. 항상 한국어로 답한다.
-2. 반드시 "오빠"라고 부른다.
-3. 검색 결과를 그대로 길게 나열하지 말고, 핵심만 정리한다.
-4. 주소/위치는 가장 신뢰할 수 있는 후보를 먼저 말한다.
-5. 확실하지 않으면 "추가 확인이 필요해, 오빠."라고 말한다.
-6. 링크를 전부 나열하지 말고, 필요할 때만 언급한다.
+1. 주소를 물으면 주소를 먼저 말한다.
+2. URL/홈페이지를 물으면 가장 가능성 높은 공식 홈페이지 링크를 먼저 말한다.
+3. 검색 결과를 전부 나열하지 말고 정답 중심으로 짧게 답한다.
+4. 확실하지 않으면 "추가 확인이 필요해, 오빠."라고 말한다.
+5. 답변은 자연스럽고 친절하게 한다.
 
 현재 저장된 기억:
 ${memoryText}
@@ -510,9 +610,64 @@ ${todoText}
 사용자 질문:
 ${userText}
 
-네이버 검색 결과:
+검색 결과:
 ${searchContext}
 `;
+      } else if (intent === "place") {
+        const searchResult = await searchPlaceInfo(userText);
+        const searchContext = buildPlaceContext(searchResult);
+
+        finalPrompt = `
+너는 사용자의 한국어 개인비서다.
+반드시 사용자를 "오빠"라고 부른다.
+가게/맛집/플레이스 검색 결과를 기반으로 답한다.
+
+규칙:
+1. 추천해달라고 하면 2~3곳 정도만 추려서 추천한다.
+2. 가능하면 상호명, 주소, 카테고리, 네이버 지도 검색 링크를 포함한다.
+3. 링크가 필요하면 네이버 지도 검색 링크를 우선 준다.
+4. 검색 결과를 길게 나열하지 말고 사람이 검색해서 쓰는 느낌으로 자연스럽게 정리한다.
+5. 확실하지 않으면 "추가 확인이 필요해, 오빠."라고 말한다.
+
+현재 저장된 기억:
+${memoryText}
+
+현재 저장된 할 일:
+${todoText}
+
+사용자 질문:
+${userText}
+
+검색 결과:
+${searchContext}
+`;
+      } else if (intent === "news") {
+        const searchResult = await searchNewsInfo(userText);
+        const searchContext = buildNewsContext(searchResult);
+
+        finalPrompt = `
+너는 사용자의 한국어 개인비서다.
+반드시 사용자를 "오빠"라고 부른다.
+뉴스 검색 결과를 기반으로 짧고 정확하게 요약한다.
+
+규칙:
+1. 최신성 있는 핵심만 3줄 내외로 정리한다.
+2. 필요하면 링크 1~2개만 언급한다.
+3. 과장 없이 깔끔하게 정리한다.
+
+현재 저장된 기억:
+${memoryText}
+
+현재 저장된 할 일:
+${todoText}
+
+사용자 질문:
+${userText}
+
+검색 결과:
+${searchContext}
+`;
+      }
     }
 
     const response = await client.responses.create({
