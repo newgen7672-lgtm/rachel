@@ -1,9 +1,13 @@
 import express from "express";
+import OpenAI from "openai";
 
 const app = express();
 app.use(express.json());
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 app.get("/", (req, res) => {
   res.send("Bot is running");
@@ -22,6 +26,13 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
+    const response = await client.responses.create({
+      model: "gpt-5.4-mini",
+      input: msg.text,
+    });
+
+    const reply = response.output_text || "답변을 만들지 못했어요.";
+
     const telegramRes = await fetch(
       `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
       {
@@ -31,14 +42,13 @@ app.post("/webhook", async (req, res) => {
         },
         body: JSON.stringify({
           chat_id: msg.chat.id,
-          text: "테스트 성공! 네 메시지 받았어: " + msg.text,
+          text: reply,
         }),
       }
     );
 
-    const telegramData = await telegramRes.text();
-    console.log("Telegram sendMessage status:", telegramRes.status);
-    console.log("Telegram sendMessage response:", telegramData);
+    console.log("Telegram status:", telegramRes.status);
+    console.log("Telegram response:", await telegramRes.text());
   } catch (error) {
     console.error("❌ webhook error:", error);
   }
