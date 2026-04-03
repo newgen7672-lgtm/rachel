@@ -84,13 +84,14 @@ function needsNaverSearch(text) {
 }
 
 async function buildSearchContext(userText) {
+  // 주소/위치/본사 관련 질문이면 local 우선
   if (
     userText.includes("주소") ||
     userText.includes("위치") ||
     userText.includes("어디") ||
     userText.includes("본사")
   ) {
-    const localItems = await naverSearch("local", userText + " 회사 주소");
+    const localItems = await naverSearch("local", userText + " 회사 주소").catch(() => []);
 
     if (localItems.length > 0) {
       return localItems
@@ -103,10 +104,25 @@ async function buildSearchContext(userText) {
         )
         .join("\n\n");
     }
+
+    const webItems = await naverSearch("webkr", userText + " 회사 주소").catch(() => []);
+
+    if (webItems.length > 0) {
+      return webItems
+        .map(
+          (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+        )
+        .join("\n\n");
+    }
+
+    return "회사 주소 관련 검색 결과를 찾지 못했어요.";
   }
 
+  // 뉴스/기사 질문이면 news
   if (userText.includes("뉴스") || userText.includes("기사")) {
-    const newsItems = await naverSearch("news", userText);
+    const newsItems = await naverSearch("news", userText).catch(() => []);
 
     if (newsItems.length > 0) {
       return newsItems
@@ -117,9 +133,26 @@ async function buildSearchContext(userText) {
         )
         .join("\n\n");
     }
+
+    return "뉴스 검색 결과를 찾지 못했어요.";
   }
 
+  // 일반 회사 정보는 webkr 먼저
+  const webItems = await naverSearch("webkr", userText + " 회사 정보").catch(() => []);
+
+  if (webItems.length > 0) {
+    return webItems
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
+  }
+
+  // 마지막 fallback만 blog
   const blogItems = await naverSearch("blog", userText + " 회사 정보").catch(() => []);
+
   if (blogItems.length > 0) {
     return blogItems
       .map(
