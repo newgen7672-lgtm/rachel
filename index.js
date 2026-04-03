@@ -16,7 +16,8 @@ function getUserState(chatId) {
   if (!userData.has(chatId)) {
     userData.set(chatId, {
       todos: [],
-      history: []
+      history: [],
+      memories: []
     });
   }
   return userData.get(chatId);
@@ -88,7 +89,6 @@ function needsNaverSearch(text) {
 }
 
 async function buildSearchContext(userText) {
-  // 주소/위치/본사 관련 질문
   if (
     userText.includes("주소") ||
     userText.includes("위치") ||
@@ -124,7 +124,6 @@ async function buildSearchContext(userText) {
     return "회사 주소 관련 검색 결과를 찾지 못했어.";
   }
 
-  // 뉴스/기사 질문
   if (userText.includes("뉴스") || userText.includes("기사")) {
     const newsItems = await naverSearch("news", userText).catch(() => []);
 
@@ -141,7 +140,6 @@ async function buildSearchContext(userText) {
     return "뉴스 검색 결과를 찾지 못했어.";
   }
 
-  // 일반 회사 정보
   const webItems = await naverSearch("webkr", userText + " 회사 정보").catch(() => []);
 
   if (webItems.length > 0) {
@@ -154,7 +152,6 @@ async function buildSearchContext(userText) {
       .join("\n\n");
   }
 
-  // 마지막 fallback만 blog
   const blogItems = await naverSearch("blog", userText + " 회사 정보").catch(() => []);
 
   if (blogItems.length > 0) {
@@ -169,6 +166,96 @@ async function buildSearchContext(userText) {
 
   return "검색 결과를 찾지 못했어.";
 }
+
+// ===== 기억 기능 =====
+
+function addMemory(chatId, memoryText, source = "manual") {
+  const state = getUserState(chatId);
+
+  const cleaned = memoryText.trim();
+  if (!cleaned) return false;
+
+  const alreadyExists = state.memories.some(
+    (m) => m.text.toLowerCase() === cleaned.toLowerCase()
+  );
+
+  if (alreadyExists) return false;
+
+  state.memories.push({
+    text: cleaned,
+    source,
+    createdAt: new Date().toISOString()
+  });
+
+  // 너무 많아지면 최근 30개만 유지
+  if (state.memories.length > 30) {
+    state.memories = state.memories.slice(-30);
+  }
+
+  return true;
+}
+
+function deleteMemory(chatId, keyword) {
+  const state = getUserState(chatId);
+  const before = state.memories.length;
+
+  state.memories = state.memories.filter(
+    (m) => !m.text.toLowerCase().includes(keyword.toLowerCase())
+  );
+
+  return before - state.memories.length;
+}
+
+function formatMemories(chatId) {
+  const state = getUserState(chatId);
+  if (state.memories.length === 0) {
+    return "저장된 기억 없음";
+  }
+
+  return state.memories
+    .map((m, i) => `${i + 1}. ${m.text}`)
+    .join("\n");
+}
+
+function shouldAutoRemember(text) {
+  const patterns = [
+    "내 이름은 ",
+    "난 ",
+    "나는 ",
+    "오빠가 좋아하는 ",
+    "내가 좋아하는 ",
+    "내가 싫어하는 ",
+    "나를 ",
+    "앞으로 ",
+    "항상 ",
+    "내 직업은 ",
+    "내 회사는 ",
+    "내 취향은 "
+  ];
+
+  return patterns.some((p) => text.includes(p));
+}
+
+async function extractMemoryFromText(userText) {
+  const response = await client.responses.create({
+    model: "gpt-5.4-mini",
+    input: [
+      {
+        role: "system",
+        content:
+          "너는 사용자의 발화에서 장기적으로 기억할 만한 핵심 개인 선호나 호칭, 이름, 직업, 취향만 짧게 1개 추출하는 도우미다. 추출할 가치가 없으면 NONE만 출력해라. 문장은 한국어로 1줄만 출력해라."
+      },
+      {
+        role: "user",
+        content: userText
+      }
+    ]
+  });
+
+  return (response.output_text || "NONE").trim();
+}
+
+// ===== 웹훅 =====
 
 app.get("/", (req, res) => {
   res.send("Bot is running");
@@ -201,13 +288,85 @@ app.post("/webhook", async (req, res) => {
 /help - 사용법 보기
 /todo 할일 - 할 일 저장
 /summary - 최근 대화 요약
+/memory - 저장된 기억 보기
+/forget 내용 - 관련 기억 삭제
+기억해줘: 내용 - 명시적으로 기억시키기
 
 예시:
-- 게임테일즈 회사 주소 알아봐줘
+- 기억해줘: 오빠가 좋아하는 게임은 리니지야
+- /memory
+- /forget 리니지
 - 넷마블 본사 위치 알려줘
-- 최근 게임업계 뉴스 찾아줘
-- 내일 일정 정리해줘`
+- 최근 게임업계 뉴스 찾아줘`
       );
+      return;
+    }
+
+    // /memory
+    if (userText === "/memory") {
+      await sendTelegramMessage(
+        chatId,
+        `알겠어, 오빠. 지금 기억하고 있는 내용이야.\n\n${formatMemories(chatId)}`
+      );
+      return;
+    }
+
+    // /forget
+    if (userText.startsWith("/forget")) {
+      const keyword = userText.replace("/forget", "").trim();
+
+      if (!keyword) {
+        await sendTelegramMessage(
+          chatId,
+          "알겠어, 오빠. 지울 기억의 키워드를 같이 보내줘.\n예: /forget 리니지"
+        );
+        return;
+      }
+
+      const deletedCount = deleteMemory(chatId, keyword);
+
+      if (deletedCount > 0) {
+        await sendTelegramMessage(
+          chatId,
+          `알겠어, 오빠. "${keyword}" 관련 기억 ${deletedCount}개 지웠어.`
+        );
+      } else {
+        await sendTelegramMessage(
+          chatId,
+          `오빠, "${keyword}" 관련해서 지울 기억을 찾지 못했어.`
+        );
+      }
+      return;
+    }
+
+    // 명시적 기억
+    if (userText.startsWith("기억해줘:") || userText.startsWith("기억해줘 ")) {
+      const memoryText = userText
+        .replace("기억해줘:", "")
+        .replace("기억해줘", "")
+        .trim();
+
+      if (!memoryText) {
+        await sendTelegramMessage(
+          chatId,
+          "알겠어, 오빠. 기억할 내용을 같이 보내줘.\n예: 기억해줘: 오빠가 좋아하는 게임은 리니지야"
+        );
+        return;
+      }
+
+      const added = addMemory(chatId, memoryText, "manual");
+
+      if (added) {
+        await sendTelegramMessage(
+          chatId,
+          `알겠어, 오빠. 이건 기억해둘게.\n- ${memoryText}`
+        );
+      } else {
+        await sendTelegramMessage(
+          chatId,
+          `오빠, 그건 이미 기억하고 있어.\n- ${memoryText}`
+        );
+      }
       return;
     }
 
@@ -269,7 +428,7 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 사용자 대화 기록 저장
+    // 일반 대화 기록 저장
     state.history.push({
       role: "user",
       content: userText
@@ -279,10 +438,24 @@ app.post("/webhook", async (req, res) => {
       state.history = state.history.slice(-20);
     }
 
+    // 자동 기억
+    if (shouldAutoRemember(userText)) {
+      try {
+        const extracted = await extractMemoryFromText(userText);
+        if (extracted && extracted !== "NONE") {
+          addMemory(chatId, extracted, "auto");
+        }
+      } catch (memoryError) {
+        console.error("❌ auto memory error:", memoryError);
+      }
+    }
+
     const todoText =
       state.todos.length > 0
         ? state.todos.map((t, i) => `${i + 1}. ${t.text}`).join("\n")
         : "현재 저장된 할 일 없음";
+
+    const memoryText = formatMemories(chatId);
 
     let finalPrompt = `
 너는 사용자의 한국어 개인비서다.
@@ -300,6 +473,9 @@ app.post("/webhook", async (req, res) => {
 3. 너무 과장된 애교 말투는 쓰지 말고, 자연스럽고 부드럽게 답한다.
 4. 답변은 실용적으로 짧고 명확하게 한다.
 5. 모르면 모른다고 말하고, 추측은 줄인다.
+
+현재 저장된 기억:
+${memoryText}
 
 현재 저장된 할 일:
 ${todoText}
@@ -324,6 +500,9 @@ ${userText}
 4. 주소/위치는 가장 신뢰할 수 있는 후보를 먼저 말한다.
 5. 확실하지 않으면 "추가 확인이 필요해, 오빠."라고 말한다.
 6. 링크를 전부 나열하지 말고, 필요할 때만 언급한다.
+
+현재 저장된 기억:
+${memoryText}
 
 현재 저장된 할 일:
 ${todoText}
