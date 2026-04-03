@@ -16,13 +16,13 @@ app.get("/", (req, res) => {
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
 
+  const msg = req.body.message;
+  if (!msg?.text) return;
+
+  const chatId = msg.chat.id;
+  const userText = msg.text;
+
   try {
-    const msg = req.body.message;
-    if (!msg?.text) return;
-
-    const chatId = msg.chat.id;
-    const userText = msg.text;
-
     const response = await client.responses.create({
       model: "gpt-5.4-mini",
       input: userText,
@@ -40,8 +40,20 @@ app.post("/webhook", async (req, res) => {
         text: reply,
       }),
     });
-  } catch (e) {
-    console.error(e);
+
+  } catch (error) {
+    console.error(error);
+
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: "❗ 에러 발생: " + error.message,
+      }),
+    });
   }
 });
 
