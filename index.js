@@ -42,6 +42,97 @@ async function sendTelegramMessage(chatId, text) {
   console.log("Telegram response:", result);
 }
 
+function stripHtml(text = "") {
+  return text
+    .replace(/<[^>]*>/g, "")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+async function naverSearch(type, query) {
+  const url = `https://openapi.naver.com/v1/search/${type}.json?query=${encodeURIComponent(query)}&display=5&sort=sim`;
+
+  const res = await fetch(url, {
+    headers: {
+      "X-Naver-Client-Id": process.env.NAVER_CLIENT_ID,
+      "X-Naver-Client-Secret": process.env.NAVER_CLIENT_SECRET,
+    },
+  });
+
+  const data = await res.json();
+  return data.items || [];
+}
+
+function needsNaverSearch(text) {
+  const keywords = [
+    "주소",
+    "위치",
+    "어디",
+    "본사",
+    "회사 정보",
+    "홈페이지",
+    "전화번호",
+    "최근 뉴스",
+    "기사",
+    "알아봐줘",
+    "찾아줘"
+  ];
+
+  return keywords.some((k) => text.includes(k));
+}
+
+async function buildSearchContext(userText) {
+  if (
+    userText.includes("주소") ||
+    userText.includes("위치") ||
+    userText.includes("어디") ||
+    userText.includes("본사")
+  ) {
+    const localItems = await naverSearch("local", userText);
+
+    if (localItems.length > 0) {
+      return localItems
+        .map(
+          (item, i) => `${i + 1}. ${stripHtml(item.title)}
+주소: ${stripHtml(item.address || "")}
+도로명: ${stripHtml(item.roadAddress || "")}
+전화: ${stripHtml(item.telephone || "")}
+카테고리: ${stripHtml(item.category || "")}`
+        )
+        .join("\n\n");
+    }
+  }
+
+  if (userText.includes("뉴스") || userText.includes("기사")) {
+    const newsItems = await naverSearch("news", userText);
+
+    if (newsItems.length > 0) {
+      return newsItems
+        .map(
+          (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+        )
+        .join("\n\n");
+    }
+  }
+
+  const blogItems = await naverSearch("blog", userText).catch(() => []);
+  if (blogItems.length > 0) {
+    return blogItems
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
+  }
+
+  return "검색 결과를 찾지 못했어요.";
+}
+
 app.get("/", (req, res) => {
   res.send("Bot is running");
 });
@@ -63,30 +154,38 @@ app.post("/webhook", async (req, res) => {
     const userText = msg.text.trim();
     const state = getUserState(chatId);
 
-    // /help
     if (userText === "/help") {
       await sendTelegramMessage(
         chatId,
-        `안녕하세요. 개인비서 봇이에요.\n\n사용 가능한 명령어:\n/help - 사용법 보기\n/todo 할일 - 할 일 저장\n/summary - 최근 대화 요약\n\n그냥 일반 대화도 가능해요.\n예: 내일 일정 정리해줘`
+        `안녕하세요. 개인비서 봇이에요.
+
+사용 가능한 명령어:
+/help - 사용법 보기
+/todo 할일 - 할 일 저장
+/summary - 최근 대화 요약
+
+예시:
+- 게임테일즈 회사 주소 알아봐줘
+- 넷마블 본사 위치 알려줘
+- 최근 게임업계 뉴스 찾아줘`
       );
       return;
     }
 
-    // /todo
     if (userText.startsWith("/todo")) {
       const todoText = userText.replace("/todo", "").trim();
 
       if (!todoText) {
         await sendTelegramMessage(
           chatId,
-          "저장할 할 일을 같이 보내주세요.\n예: /todo 오후 3시에 거래처 메일 보내기"
+          "저장할 할 일을 같이 보내주세요.\n예: /todo 오후 3시에 파트너사 메일 보내기"
         );
         return;
       }
 
       state.todos.push({
         text: todoText,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
       });
 
       await sendTelegramMessage(
@@ -96,7 +195,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // /summary
     if (userText === "/summary") {
       if (state.history.length === 0) {
         await sendTelegramMessage(chatId, "아직 요약할 대화가 없어요.");
@@ -113,14 +211,13 @@ app.post("/webhook", async (req, res) => {
         input: [
           {
             role: "system",
-            content:
-              "너는 개인비서다. 아래 대화를 한국어로 짧고 명확하게 5줄 이내로 요약해라."
+            content: "너는 개인비서다. 아래 대화를 한국어로 짧고 명확하게 5줄 이내로 요약해라.",
           },
           {
             role: "user",
-            content: historyText
-          }
-        ]
+            content: historyText,
+          },
+        ],
       });
 
       const summaryText =
@@ -130,10 +227,9 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 일반 대화 기록 저장
     state.history.push({
       role: "user",
-      content: userText
+      content: userText,
     });
 
     if (state.history.length > 20) {
@@ -145,36 +241,48 @@ app.post("/webhook", async (req, res) => {
         ? state.todos.map((t, i) => `${i + 1}. ${t.text}`).join("\n")
         : "현재 저장된 할 일 없음";
 
-    const historyForPrompt = state.history
-      .slice(-10)
-      .map((item) => `${item.role}: ${item.content}`)
-      .join("\n");
+    let finalPrompt = `
+너는 한국어 개인비서다.
+항상 친절하고 짧고 실용적으로 답한다.
+불필요하게 길게 말하지 말고, 바로 실행 가능한 형태로 답해라.
+
+현재 저장된 할 일:
+${todoText}
+
+사용자 질문:
+${userText}
+`;
+
+    if (needsNaverSearch(userText)) {
+      const searchContext = await buildSearchContext(userText);
+
+      finalPrompt = `
+너는 한국어 개인비서다.
+아래 네이버 검색 결과를 바탕으로 짧고 정확하게 답해라.
+주소/위치는 가장 신뢰할 수 있는 후보를 먼저 말하고,
+확실하지 않으면 "추가 확인이 필요합니다"라고 덧붙여라.
+
+현재 저장된 할 일:
+${todoText}
+
+사용자 질문:
+${userText}
+
+네이버 검색 결과:
+${searchContext}
+`;
+    }
 
     const response = await client.responses.create({
       model: "gpt-5.4-mini",
-      input: [
-        {
-          role: "system",
-          content:
-            `너는 사용자의 한국어 개인비서다.
-항상 친절하고 짧고 실용적으로 답한다.
-불필요하게 길게 말하지 말고, 바로 실행 가능한 형태로 답해라.
-사용자의 현재 저장된 할 일:
-${todoText}`
-        },
-        {
-          role: "user",
-          content:
-            `최근 대화:\n${historyForPrompt}\n\n사용자 새 메시지:\n${userText}`
-        }
-      ]
+      input: finalPrompt,
     });
 
     const reply = response.output_text || "답변을 만들지 못했어요.";
 
     state.history.push({
       role: "assistant",
-      content: reply
+      content: reply,
     });
 
     if (state.history.length > 20) {
