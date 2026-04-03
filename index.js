@@ -91,7 +91,7 @@ async function buildSearchContext(userText) {
     userText.includes("어디") ||
     userText.includes("본사")
   ) {
-    const localItems = await naverSearch("local", userText + " 회사 주소").catch(() => []);
+    const localItems = await naverSearch("local", userText + " 본사 위치").catch(() => []);
 
     if (localItems.length > 0) {
       return localItems
@@ -138,7 +138,7 @@ async function buildSearchContext(userText) {
   }
 
   // 일반 회사 정보는 webkr 먼저
-  const webItems = await naverSearch("webkr", userText + " 회사 정보").catch(() => []);
+  const webItems = await naverSearch("webkr", userText + " 본사 주소").catch(() => []);
 
   if (webItems.length > 0) {
     return webItems
@@ -291,7 +291,7 @@ ${userText}
 
   await sendTelegramMessage(
     chatId,
-    "🔎 네이버 검색 결과 확인용:\n\n" + searchContext
+    "" + searchContext
   );
 
   finalPrompt = `
