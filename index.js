@@ -253,10 +253,15 @@ ${todoText}
 ${userText}
 `;
 
-    if (needsNaverSearch(userText)) {
-      const searchContext = await buildSearchContext(userText);
+   if (needsNaverSearch(userText)) {
+  const searchContext = await buildSearchContext(userText);
 
-      finalPrompt = `
+  await sendTelegramMessage(
+    chatId,
+    "🔎 네이버 검색 결과 확인용:\n\n" + searchContext
+  );
+
+  finalPrompt = `
 너는 한국어 개인비서다.
 아래 네이버 검색 결과를 바탕으로 짧고 정확하게 답해라.
 주소/위치는 가장 신뢰할 수 있는 후보를 먼저 말하고,
@@ -271,7 +276,7 @@ ${userText}
 네이버 검색 결과:
 ${searchContext}
 `;
-    }
+}
 
     const response = await client.responses.create({
       model: "gpt-5.4-mini",
