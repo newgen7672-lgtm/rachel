@@ -90,7 +90,7 @@ async function buildSearchContext(userText) {
     userText.includes("어디") ||
     userText.includes("본사")
   ) {
-    const localItems = await naverSearch("local", userText);
+    const localItems = await naverSearch("local", userText + " 회사 주소");
 
     if (localItems.length > 0) {
       return localItems
@@ -119,7 +119,7 @@ async function buildSearchContext(userText) {
     }
   }
 
-  const blogItems = await naverSearch("blog", userText).catch(() => []);
+  const blogItems = await naverSearch("blog", userText + " 회사 정보").catch(() => []);
   if (blogItems.length > 0) {
     return blogItems
       .map(
