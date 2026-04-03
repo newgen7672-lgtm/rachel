@@ -228,18 +228,20 @@ async function searchCompanyInfo(userText) {
   const localItems = await naverSearch("local", `${cleaned} 본사`, 3).catch(() => []);
   const addressItems = await naverSearch("webkr", `${cleaned} 회사 주소`, 5).catch(() => []);
   const homeItems = await naverSearch("webkr", `${cleaned} 공식 홈페이지`, 5).catch(() => []);
+  const siteItems = await naverSearch("webkr", `${cleaned} 사이트`, 5).catch(() => []);
 
-  return { cleaned, localItems, addressItems, homeItems };
+  return { cleaned, localItems, addressItems, homeItems, siteItems };
 }
 
 async function searchPlaceInfo(userText) {
   const cleaned = cleanSearchText(userText);
 
   const localItems = await naverSearch("local", cleaned, 5).catch(() => []);
-  const webItems = await naverSearch("webkr", `${cleaned} 네이버 플레이스`, 3).catch(() => []);
+  const placeItems = await naverSearch("webkr", `${cleaned} 네이버 플레이스`, 3).catch(() => []);
+  const mapItems = await naverSearch("webkr", `${cleaned} 네이버 지도`, 3).catch(() => []);
   const blogItems = await naverSearch("blog", `${cleaned} 후기`, 2).catch(() => []);
 
-  return { cleaned, localItems, webItems, blogItems };
+  return { cleaned, localItems, placeItems, mapItems, blogItems };
 }
 
 async function searchNewsInfo(userText) {
@@ -249,7 +251,7 @@ async function searchNewsInfo(userText) {
 }
 
 function buildCompanyContext(result) {
-  const { cleaned, localItems, addressItems, homeItems } = result;
+  const { cleaned, localItems, addressItems, homeItems, siteItems } = result;
 
   let text = `검색 대상: ${cleaned}\n\n`;
 
@@ -268,7 +270,7 @@ function buildCompanyContext(result) {
   }
 
   if (addressItems.length > 0) {
-    text += `주소/회사 정보 후보:\n`;
+    text += `주소 후보:\n`;
     text += addressItems
       .slice(0, 3)
       .map(
@@ -290,13 +292,26 @@ function buildCompanyContext(result) {
 링크: ${item.link || ""}`
       )
       .join("\n\n");
+    text += "\n\n";
+  }
+
+  if (siteItems.length > 0) {
+    text += `사이트 후보:\n`;
+    text += siteItems
+      .slice(0, 2)
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
+요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
   }
 
   return text.trim();
 }
 
 function buildPlaceContext(result) {
-  const { cleaned, localItems, webItems, blogItems } = result;
+  const { cleaned, localItems, placeItems, mapItems, blogItems } = result;
 
   let text = `검색 대상: ${cleaned}\n\n`;
 
@@ -309,19 +324,30 @@ function buildPlaceContext(result) {
 도로명: ${stripHtml(item.roadAddress || "")}
 전화: ${stripHtml(item.telephone || "")}
 카테고리: ${stripHtml(item.category || "")}
-지도링크: ${buildNaverMapSearchLink(stripHtml(item.title))}`
+네이버지도검색링크: ${buildNaverMapSearchLink(stripHtml(item.title))}`
       )
       .join("\n\n");
     text += "\n\n";
   }
 
-  if (webItems.length > 0) {
-    text += `플레이스/웹 후보:\n`;
-    text += webItems
+  if (placeItems.length > 0) {
+    text += `플레이스 링크 후보:\n`;
+    text += placeItems
       .slice(0, 2)
       .map(
         (item, i) => `${i + 1}. ${stripHtml(item.title)}
-요약: ${stripHtml(item.description || "")}
+링크: ${item.link || ""}`
+      )
+      .join("\n\n");
+    text += "\n\n";
+  }
+
+  if (mapItems.length > 0) {
+    text += `지도 링크 후보:\n`;
+    text += mapItems
+      .slice(0, 2)
+      .map(
+        (item, i) => `${i + 1}. ${stripHtml(item.title)}
 링크: ${item.link || ""}`
       )
       .join("\n\n");
@@ -590,16 +616,18 @@ ${userText}
         const searchContext = buildCompanyContext(searchResult);
 
         finalPrompt = `
+finalPrompt = `
 너는 사용자의 한국어 개인비서다.
 반드시 사용자를 "오빠"라고 부른다.
 회사/기업 검색 결과를 기반으로 답한다.
 
 규칙:
 1. 주소를 물으면 주소를 먼저 말한다.
-2. URL/홈페이지를 물으면 가장 가능성 높은 공식 홈페이지 링크를 먼저 말한다.
-3. 검색 결과를 전부 나열하지 말고 정답 중심으로 짧게 답한다.
-4. 확실하지 않으면 "추가 확인이 필요해, 오빠."라고 말한다.
-5. 답변은 자연스럽고 친절하게 한다.
+2. 홈페이지, 사이트, URL을 물으면 가장 가능성 높은 공식 링크를 먼저 말한다.
+3. 주소와 URL 둘 다 관련 있으면 둘 다 함께 정리한다.
+4. 검색 결과를 전부 나열하지 말고 정답 중심으로 짧게 답한다.
+5. 확실하지 않으면 "추가 확인이 필요해, 오빠."라고 말한다.
+6. 링크는 1개만 우선 보여준다.
 
 현재 저장된 기억:
 ${memoryText}
@@ -618,15 +646,16 @@ ${searchContext}
         const searchContext = buildPlaceContext(searchResult);
 
         finalPrompt = `
+finalPrompt = `
 너는 사용자의 한국어 개인비서다.
 반드시 사용자를 "오빠"라고 부른다.
 가게/맛집/플레이스 검색 결과를 기반으로 답한다.
 
 규칙:
-1. 추천해달라고 하면 2~3곳 정도만 추려서 추천한다.
-2. 가능하면 상호명, 주소, 카테고리, 네이버 지도 검색 링크를 포함한다.
-3. 링크가 필요하면 네이버 지도 검색 링크를 우선 준다.
-4. 검색 결과를 길게 나열하지 말고 사람이 검색해서 쓰는 느낌으로 자연스럽게 정리한다.
+1. 추천해달라고 하면 2~3곳만 추려서 추천한다.
+2. 각 추천에는 상호명, 주소, 카테고리를 짧게 넣는다.
+3. 링크가 필요하면 네이버 지도 검색 링크를 우선 보여준다.
+4. 검색 결과를 길게 나열하지 말고, 사람이 직접 검색해준 것처럼 자연스럽게 정리한다.
 5. 확실하지 않으면 "추가 확인이 필요해, 오빠."라고 말한다.
 
 현재 저장된 기억:
